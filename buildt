@@ -1,0 +1,11 @@
+ASM=nasm
+
+SD=src
+BD=build
+
+$(BD)/floppy.img : $(BD)/main.bin
+	cp $(BD)/main.bin $(BD)/floppy.img
+	truncate -s 1440k $(BD)/floppy.img
+
+$(BD)/main.bin: $(SD)/main.asm
+	$(ASM) $(SD)/main.asm -f bin -o $(BD)/main.bin
