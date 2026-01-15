@@ -36,7 +36,7 @@ bdb_large_sector_count:         dd 0
 ebr_drive_number:               db 0                            ;drive number for floppies it is 00h , for hdds its 80h most modern oses ignore this
                                 db 0                            ;simply used for padding
 ebr_signature:                  db 29h                          ;validity marker , 29 means the 3 following labels are all valid  
-ebr_volume_id:                  db 12h,34h,56h,78h              ;any 8 bytes value
+ebr_volume_id:                  db 12h,34h,56h,78h              ;any 4 bytes value
 ebr_volume_label:               db 'ATKOSB     '                ;any name but must be padded to exactly 11bytes
 ebr_system_id:                  db 'FAT12   '                   ;fs type here FAT12 but has to be padded to 8 bytes
 
@@ -86,26 +86,26 @@ main:
   ;;;***This is not a stack it is a data buffer so it is written to upward NOT DOWNWARDS
   call disk_read
 
-  jmp .halt
+  jmp halt
 
 
 
 floppy_failure:
   mov si,read_failure
-  call .lb1               ;;recall lb1 is method used to print text in bios using the 10h int (from si)
+  call lb1               ;;recall lb1 is method used to print text in bios using the 10h int (from si)
   jmp key_press
 
 key_press:
   mov ah,00h                ;indicates a read and clear of the keyboard input buffer storesteh ascii valuein AL
   int 16h                   ;Keyboard BIOS interrupt
                             ;all in all our 2 lines wait for a key press and continue after any key is pressed
-  jmp FFFFh:0
+  jmp 0FFFFh:0
 
-.halt:
+halt:
   cli
   hlt
 
-halt:
+.halt:
   jmp .halt
 
 ;
@@ -157,7 +157,7 @@ lba_to_chs:
 ;READING FROM A DISK
 ;
 disk_read:
-  push cx                      ;CX holds no of sectors to read, AX holds LBS (read PRE-CONDITION)
+  push cx                      ;CX holds no of sectors to read, AX holds LBA (read PRE-CONDITION)
   call lba_to_chs              ;converted values are stored in results as per LBA TO CHS CONVERSION FUNCTION 
   pop ax
   mov ah,02h                   ; as per requirements now ah has 02 and AL holds number of sectors to read
@@ -198,7 +198,7 @@ disk_reset:
 
 
 msg:                  db 'HELLO WORLD !',EOLJ,0
-read_failure:         db'FAILURE TO READ FROM DRIVE ! HAVE A GOOD DAY :)',EOLJ,0
+read_failure:         db'FAILURE TO READ FROM DRIVE ! HAVE A GOOD DAY',EOLJ,0
 
 
 times 510-($-$$) db 0
