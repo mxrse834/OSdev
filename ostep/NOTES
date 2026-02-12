@@ -1,0 +1,277 @@
+H1:
+ general structure: 
+ 
+ [ Floppy Image (.img) ]
+┌──────────────────────────┐
+│ Sector 0: Bootloader     │  <-- BIOS loads & runs this (512 bytes)
+├──────────────────────────┤
+│ Sector 1+: Kernel binary │  <-- Bootloader loads this into RAM
+├──────────────────────────┤
+│ Other files (optional)   │
+└──────────────────────────┘
+
+ > The booloader is 512 bytes in size which has its last 2 bytes as 0xAA55
+   This is required to verify that the current sector holds the Bootloader
+   and is the first thing that is loaded when the os starts up into memory at 0x7C00
+ > Once the booloder is done it jumps to the Kernel which basically hosts all essential 
+   processes -CPU scheduling, memory management,drivers,system calls,filesystems
+
+this is how a fat disk looks:
+  LBA 0   : FAT boot sector 
+  LBA 1+  : Reserved sectors
+  FAT #1
+  FAT #2
+  Root directory region (or cluster chain in FAT32)
+  Data area (clusters)
+
+within this if we magnify out LBA 0 which is our FAT boot sector:
+
+    Offset   Size     Purpose
+  ----------------------------------------------------------------
+    0x000    3        JMP instruction
+    0x003    8        OEM name
+
+  -------------------- BPB ----------------------------------------
+    0x00B    25       BIOS Parameter Block
+
+  -------------------- EBPB ---------------------------------------
+    0x024    26       Extended BPB (FAT12/FAT16)
+
+  ------------------ BOOTSTRAP CODE -----------------------------
+    0x03E    ~448     Bootloader code / padding
+
+    0x1FE    2        Boot signature (0x55, 0xAA)
+
+
+Commit 1:
+understanding our OS structure for now :
+  currently on our floppy we have dependencies called bootloader.bin,kernel.bin.
+  the first sector of our floppy holds the booloader.bin file it is copied using the dd command (raw byte copy)
+  An important note here is that we must have the fat 12 primitives stored in the bootloader.asm file,
+  since theyre overwritten here (when we perform the dd after an mkfs)
+
+  >>our floppy sector 0 holds the following:
+    1)short jump instruction with a nop(EB 3C 90) - EB is the opcode for a short jump(range of +127 to -128) of length 3C which is 60 in decimal . 90 is the opcode for no operation which leaves a single cpu cycle without doing anything
+    2)BPB(bios parameter block)-this is 59 bytes in size sp esssentially we have the jump inst skipping over the bpb and jumping to the boot code 
+    3)bootcode -> bootloader.bin -> booloader.asm
+  
+
+
+
+ 1) .PHONY: Targets are not executed if make thinks that they correspond to an existing file that
+    is already up-to-date.this label indicates that the names mentioned in front of it are to be 
+    executed as commands regardless not as files ( hence they are always executed)
+
+ 2)understanding the first 4 lines:
+    dd if=/dev/zero of=$(BD)/floppy.img bs=512 count=2880  
+      > dd is a raw byte copying mechanism it does not preserve any filesystem info as opposed to the cp command which
+        preserves the file structure such as BPB, fat tables etc..
+        so what our command essentially does is erases writes 0s to entire 1.44MB floppy 
+      
+    mkfs.fat -F 12 floppy.img 
+      > the mkfs command writes fat 12 ( floppy fs) critical data to our floppy drive,
+        (detail) a basic fat 12 fs contains the following metadata:
+
+
+    dd if=$(BD)/bootloader.bin of=$(BD)/floppy.img conv=notrunc
+      > this command copies the bootloader.bin file into our floppy starting from the first sector , the notrunc option means that 
+        the size of the floppy is retained and not reduced to the copy size (ie the size of bootloader.bin)
+        therefore the data after the first 512 bytes is retained.
+
+    mcopy -i floppy.img kernel.bin "::kernel.bin"
+      > mcopy is a command from mtools which helps us write to a disk without mounting it (we need to mount the disk in cp)
+        here the "-i" specifies that we must use the floppy.img image when it is not specified mcopy jumps to a default called fd0
+        which refers to the first physical floppy disk which modern systems dont have. exmaple on my system - 
+          zram0       253:0    0  15.6G  0 disk [SWAP]
+          nvme0n1     259:0    0 238.5G  0 disk 
+          ├─nvme0n1p1 259:1    0   100M  0 part 
+          ├─nvme0n1p2 259:2    0    16M  0 part 
+          ├─nvme0n1p3 259:3    0  79.6G  0 part 
+          ├─nvme0n1p4 259:4    0   642M  0 part 
+          └─nvme0n1p5 259:5    0 158.1G  0 part /var/cache
+                                          /var/log
+                                          /home
+                                          /
+
+>>Addressing:
+    physical address calculation(16 bit real mode) is as follows: 
+      physical address= segment(DS register) * 16 + offset;
+      ex-> say we run an example command as follows: mv ax , [bdb_sectors_per_cluster]
+      the calculation goes like this - ax will hold first 2 bytes (since ax is a 2 byte register)
+      at the Effective address -> DS * 16 + bdb_sectors_per_cluster
+
+    LBA:
+      LBA referes to logical block addressing,int this method the linear flat storage method is used :
+            block 1
+            block 2
+            block 3 ...so on
+      It is used in all modern systems.
+
+    CHS:
+      Traditionally, disks were addressed as cylinder head sector.modern disks have varying geometry lines,
+      sectors start numbering from 1 while heads and cylinders start from 0. understanding some of the technical jargon:
+
+      1)tracks-> refers to a particular ring at a defined radius on a particular surface 
+
+      2)cylinders -> it refers to the set of all tracks at a given distance across all the surfaces
+
+      3)heads -> R/W heads used to select a particular surface on the disk
+
+      4)sector -> it refers to a pizza slice on a disk surface 
+
+    we have the following formulae for LBA to CHS conversion:
+      C=LBA/(HPC*SPT)
+      H=(LBA/SPT)%HPC
+      S=LBA%SPT + 1    ; +1 since sector addressing is from 1
+
+    >>> brief working of bootloaders:  The bootloader finds the file cluster number ,
+        converts it into LBA, converts this into CHS,then calls int 13h 
+        NOTE: Modern bios are able to bypass CHS scheme completely directly talking to hardware.
+
+      >>understanding int 13h:
+        int 13h to begin with is a DISK INTERRUPT ( like we used 10h to interrupt video ),
+        again an interrupt pauses any task the cpu is currently performing and runs whatever the interrupt deals with and defines.
+        lets understand 13h in more depth:
+          the registers must be preloaded wiht the following info before calling the interrput:
+
+            AH          Opeartion name
+            AL          how many sectors
+            CH          cylinder               ;CH stores the first 8 bits of cylinder
+            CL          head                   ;CL's upper 2 bits hold the 9th and 10th bit of cylinder,and first 6 bits of sector are held by the trailing bits of CL 
+            DH          sector
+            DL          which disk
+            ES:BX       memory buffer
+
+          then we call "int 13h",in hardware what happens is it sees the keyword and and jumps to the IVT(interrupt vector table)  
+          NOTE- IVT is located at the bios address 0000:0000, the BIOS starts at 0000:7C00 , FFFF:0 represents a full cpu reset ie the control is passed to the firmware
+          in this its searches for the 13h , each interrupt has associated with a CS:IP combo, it finds this 
+          jumps to this IP and executes based on the preloaded register values.
+          if the interrupt is a success carry flag is set to 0 if theres a failure we have 1
+
+          >>BOOT understanding
+          1) on start , the cpu is hardwired to load 0FFFF:0000 (CS:IP). so it calculates address as follows , Address= CS*16+IP,giving FFFF0h
+          2) at FFFF0h lies the ROM (at this point RAM is not initialized,FFFF0h is mapped to ROM / flash by hardware logic before RAM exists)
+             this space in ROM is 16 bytes in size (FFFF0 - FFFFF) , all it generally contains is a jmp F000:E058 ( this is afar jump in asssembly as CS changes)
+          3) after the jump into main BIOS(at for example F000:E05B), the POST(power on self test) process begins .
+             Initializing of CPU/chipset, Test RAM,Initialize keyboard , disk controller , video , building of IVT(0000:0000), buliding BIOS Data Area(0040:0000)
+          4) BIOS attempts to load first 512 bytes of drives in boot order it also checks for the boot signature(0xAA55)
+          5) when a valid boot option is found it is loaded into RAM at 0000:7C00 (AT THIS TIME DL is laso set to the boot drive number)and we perform a jump there and start with our bootloader code
+          
+////////////////////////
+//////////////////////
+/////////////////////
+1)how to virtualize resources effectively ?
+2)how to build concurrent programs?
+3)how to store data persistantly ?
+/////////////////////
+///////////////////
+////////////////
+security,networking,graphics
+////////////////
+//////////////
+//////////
+///////
+///
+/
+OSTEP;
+
+1)VIRTUALIZATION- CPU and memory;
+2)Concurrency;
+3)persistance
+
+>>1)as for cpu virtualization: understanding processes->procedural calls -> systemcalls-> process API ( forks execs waits)
+ >>>cpu -> limited direct execution prototcol
+ CPU ONLY MAINTAINS THESE: 1)instruction pointer(eip) 2)stack pointer(esp) 3)registers (assuming all to be 32 bit)
+ safe environment for execution ( a sureshot return point into kernel) -> trap handlers + timer interrupts
+ also kernel vs user mode(system call is issued in user thats performs a "trap" into the kernel )
+ "trap"-> saves registers ,stackand jumps to "trap table" defined at boot in kernel mode ONLY
+ traps or ints can lead to context switches;rdtscp(cpu ticks);
+ 
+ (all part of LDE)
+
+
+>>2)high level policies -> context switches;fully operational scheudling disciplines;we take scheduling metric : turnaround_time( completion -arrival)
+	another metric is "fairness"which opposed "performance metric".turnaround time is a "performance  metric"
+ 	FCFS<SJF<STCF(PSJF)----> when thinking purely of turnaround time
+ 	
+ 	new metric-> response time(first run - arrival)
+ 	RR>(amortization is key due to context switches)
+
+>>3)multilevel-feeback-queue: optimize 1)turnaround 2)response
+    attrib:
+    • Rule 1: If Priority(A) > Priority(B), A runs (B doesn’t).
+    • Rule 2: If Priority(A) = Priority(B), A & B run in round-robin fash-
+        ion using the time slice (quantum length) of the given queue.
+    • Rule 3: When a job enters the system, it is placed at the highest
+        priority (the topmost queue).
+    • Rule 4: Once a job uses up its time allotment at a given level (re-
+        gardless of how many times it has given up the CPU), its priority is
+        reduced (i.e., it moves down one queue).
+    • Rule 5: After some time period S, move all the jobs in the system
+        to the topmost queue.
+ 	CHECK OUT CFS
+
+ https://dl.acm.org/doi/epdf/10.1145/223586.223597
+
+ https://contents.meetbsd.ir/ebook/Design%20and%20Implementation.pdf
+
+
+>>4)address spaces:virtualize memory.principle of isolations:transparency,protection
+    VALGRIND : valgrind --leak-check=yes ./null
+
+    
+>>5)hardware-based address translation:
+	software based relocation - static (performed by the loader)
+	hardware based reolcation - dynamic(Base and Bounds register part of MMU (each processor gets a pair))
+	Bounds:holds sixe of address space/physical address of the end of address space
+	Base+virtual=physical
+	negatives-internal fragmentation
+
+
+6>>>segmentation(improved base and bounds):each segment has its own base and bounds register:
+	(leads to reduced waste of space)
+	example : assuem 16 KB address space(0 to 16KB-1)---> ie 14 bits
+	  we divy these 16 bits into 2 parts for segment+offset calc.exmaple 2 bits for segment and 12 for offset
+	  in this case we can see that its possibel to address maximum within a segment upto 4Kb 
+	  and we can have 4 such segments(we need only 3 for now - stack,code,heap)
+	  virtual->physical mapping:
+	  for,		stack(upwards)   = (physical_base + (offset_bits_virtual - max_seg_size(its 4 KB here since we have 12 bits for it)))
+		  code & heap(downwards) = (physical_base + offset_bits_virtual)
+
+		  ////// Since maximum offset_bits_virtual cant exceed 4KB we have a negative physical_offset calculated for stack
+
+	  protection bits provide support for sharing same code-->r/w/x(read/write/execute)
+
+	  void* sbrk(intptr_t increment)-->> used to extend heap() upto guard pages (stack()/ is also present below heap but its grows downwards)
+	  			in particular is helps set current program break .since this is all in the virtual table the space betweenn stack and heap is not wasted)
+	  			failure->(void*)-1
+	  		
+7>>>best_fit/worst_fit/buddy ---> are all physical memory allocation algorithms
+	paging/segmentation ---->address translation 
+	
+	
+
+
+
+
+
+          
+
+          
+
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,26 @@
+5>>>software based relocation - static (performed by the loader)
+	hardware based reolcation - dynamic(Base and Bounds register part of MMU (each processor gets a pair))
+	Bounds:holds sixe of address space/physical address of the end of address space
+	Base+virtual=physical
+	negatives-internal fragmentation
+
+6>>>segmentation(improved base and bounds):each segment has its own base and bounds register:
+	(leads to reduced waste of space)
+	example : assuem 16 KB address space(0 to 16KB-1)---> ie 14 bits
+	  we divy these 16 bits into 2 parts for segment+offset calc.exmaple 2 bits for segment and 12 for offset
+	  in this case we can see that its possibel to address maximum within a segment upto 4Kb 
+	  and we can have 4 such segments(we need only 3 for now - stack,code,heap)
+	  virtual->physical mapping:
+	  for,		stack(upwards)   = (physical_base + (offset_bits_virtual - max_seg_size(its 4 KB here since we have 12 bits for it)))
+		  code & heap(downwards) = (physical_base + offset_bits_virtual)
+
+		  ////// Since maximum offset_bits_virtual cant exceed 4KB we have a negative physical_offset calculated for stack
+
+	  protection bits provide support for sharing same code-->r/w/x(read/write/execute)
+
+	  void* sbrk(intptr_t increment)-->> used to extend heap() upto guard pages (stack()/ is also present below heap but its grows downwards)
+	  			in particular is helps set current program break .since this is all in the virtual table the space betweenn stack and heap is not wasted)
+	  		
+
+
+
